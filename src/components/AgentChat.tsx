@@ -19,6 +19,7 @@ import {
   Layers,
   FileCode,
   AlertTriangle,
+  Wrench,
 } from 'lucide-react';
 import { ChatMessage, OllamaSettings, SystemInfo } from '../types.ts';
 import { ActionApprovalCard } from './ActionApprovalCard.tsx';
@@ -42,6 +43,9 @@ interface AgentChatProps {
   onUpdateRootDirectory: (newPath: string) => Promise<boolean>;
   onNavigateToSearch: () => void;
   onSaveCodeToFile?: (code: string, language: string, suggestedFilename?: string) => void;
+  activeFilePath?: string | null;
+  openedFiles?: Array<{ path: string; name: string }>;
+  recentLogs?: Array<{ id: string; timestamp: string; level: string; source: string; message: string }>;
 }
 
 export const AgentChat: React.FC<AgentChatProps> = ({
@@ -59,6 +63,9 @@ export const AgentChat: React.FC<AgentChatProps> = ({
   onUpdateRootDirectory,
   onNavigateToSearch,
   onSaveCodeToFile,
+  activeFilePath,
+  openedFiles,
+  recentLogs,
 }) => {
   const [input, setInput] = useState('');
   const [writeToFileMode, setWriteToFileMode] = useState(false);
@@ -77,6 +84,13 @@ export const AgentChat: React.FC<AgentChatProps> = ({
     if (writeToFileMode) {
       const fileTarget = targetFileName.trim() || 'appropriate file name';
       finalPrompt += `\n\n[ADMIN DIRECTIVE: Write this code into a file using the // ACTION: WRITE_FILE block. Target filename: "${fileTarget}". Put the complete source code inside // DETAILS: so it can be approved and saved to disk.]`;
+    }
+
+    // Detect if prompt is asking to fix errors / debug / troubleshoot
+    const isFixErrorsPrompt = /(?:fix(?:ing)?(?:\s+(?:all|the|any|these))?\s+errors?|debug|troubleshoot|diagnose\s+errors?|solve\s+error|repair\s+errors?)/i.test(input);
+    if (isFixErrorsPrompt) {
+      const activeFileHint = activeFilePath ? ` (Active file in Code Studio: "${activeFilePath}")` : '';
+      finalPrompt += `\n\n[ADMIN DIRECTIVE: CRITICAL FOR FIXING ERRORS — DO NOT simulate the file or guess its contents in text. You MUST physically open and inspect the target file${activeFileHint} using // ACTION: READ_FILE with // NEEDS_LOGS: true so execution output and terminal logs are actively monitored before proposing fixes.]`;
     }
 
     onSendMessage(finalPrompt);
@@ -347,6 +361,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({
                   stepCurrent={(lastMsg.stepCurrent || 1) + 1}
                   stepTotal={lastMsg.stepTotal || 3}
                   autoAllowPromptActive={autoAllowPromptActive}
+                  recentLogs={recentLogs}
                   onContinueAction={onContinueAction}
                   onCancelAutoContinue={onCancelAutoContinue}
                 />
@@ -370,9 +385,9 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       {/* Input Form Bar with Write to File Button */}
       <div className="p-4 bg-[#0a0c12] border-t border-slate-800 w-full shrink-0">
         <form onSubmit={handleSubmit} className="w-full max-w-5xl xl:max-w-6xl 2xl:max-w-7xl mx-auto space-y-2 px-2 sm:px-4">
-          {/* Quick Action Toolbar with Write into File button */}
+          {/* Quick Action Toolbar with Write into File button & Fix Errors button */}
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setWriteToFileMode(!writeToFileMode)}
@@ -392,6 +407,19 @@ export const AgentChat: React.FC<AgentChatProps> = ({
                 >
                   {writeToFileMode ? 'ACTIVE' : 'OFF'}
                 </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const targetHint = activeFilePath ? ` in ${activeFilePath.split('/').pop()}` : '';
+                  setInput(`Fix the errors${targetHint} and monitor output logs`);
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[#141721] hover:bg-[#1a1f2c] border border-amber-600/60 hover:border-amber-500 text-amber-300 transition-all shadow-sm"
+                title="Instruct Ollama to physically open the file from disk and monitor logs to fix errors"
+              >
+                <Wrench className="w-3.5 h-3.5 text-amber-400" />
+                <span>Fix Errors (Open &amp; Monitor Logs)</span>
               </button>
 
               {writeToFileMode && (

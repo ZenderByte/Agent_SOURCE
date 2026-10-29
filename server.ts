@@ -761,10 +761,10 @@ app.post('/api/ollama/tags', async (req, res) => {
 });
 
 // Helper to extract structured action from Ollama output
-function extractActionFromOllamaOutput(content: string) {
+function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = false) {
   // Check if AI explicitly indicated it needs terminal/execution logs to continue
   const needsLogsMatch = content.match(/\/\/\s*NEEDS_LOGS:\s*(true|yes)/i) || content.match(/\/\/\s*CONTINUATION:\s*(true|yes)/i);
-  const needsContinuationLogs = Boolean(needsLogsMatch);
+  let needsContinuationLogs = Boolean(needsLogsMatch);
 
   // Pattern 1: Explicit // ACTION: block
   const actionMatch = content.match(/\/\/\s*ACTION:\s*([A-Z_]+)/i);
@@ -774,6 +774,11 @@ function extractActionFromOllamaOutput(content: string) {
     if (type === 'MKDIR') type = 'CREATE_FOLDER';
     if (type === 'RMDIR') type = 'DELETE_FOLDER';
     if (type === 'RENAME' || type === 'MOVE') type = 'RENAME_PATH';
+
+    // If operator is fixing errors and action is READ_FILE, automatically require logs/content continuation
+    if (type === 'READ_FILE' && isFixErrorsIntent) {
+      needsContinuationLogs = true;
+    }
 
     const targetMatch = content.match(/\/\/\s*TARGET:\s*([^\n\r]+)/i);
     const reasonMatch = content.match(/\/\/\s*REASON:\s*([^\n\r]+)/i);
@@ -876,6 +881,8 @@ app.post('/api/ollama/chat', async (req, res) => {
     messages = [],
     systemInfo,
     promptMemoryLimit = 5,
+    activeFilePath,
+    openedFiles = [],
   } = req.body;
   const cleanHost = cleanOllamaHost(host);
 
@@ -900,6 +907,31 @@ app.post('/api/ollama/chat', async (req, res) => {
       content: m.content,
     }));
 
+  // Detect if operator prompt is requesting to fix errors/debug
+  const lastUserMessage = [...sanitizedMessages].reverse().find((m: any) => m.role === 'user');
+  const isFixErrorsIntent = Boolean(
+    lastUserMessage &&
+    /(?:fix(?:ing)?(?:\s+(?:all|the|any|these))?\s+errors?|debug|troubleshoot|diagnose\s+errors?|solve\s+error|repair\s+errors?)/i.test(lastUserMessage.content)
+  );
+
+  let fixErrorsDirective = '';
+  if (isFixErrorsIntent) {
+    const targetHint = activeFilePath || (openedFiles[0]?.path) || '';
+    fixErrorsDirective = `
+CRITICAL HIGH-PRIORITY DIRECTIVE — OPERATOR DEMANDS ERROR FIXING:
+The user explicitly requested to "fix the errors" or debug/troubleshoot.
+1. DO NOT SIMULATE THE FILE. Never invent, imagine, or guess file lines or output mock code in markdown.
+2. YOU MUST PHYSICALLY OPEN AND READ THE FILE FIRST: Propose a READ_FILE action immediately:
+// ACTION: READ_FILE
+// TARGET: ${targetHint || '<filepath_to_fix>'}
+// REASON: Physically opening file from disk to inspect real source code and monitor logs.
+// NEEDS_LOGS: true
+// END_ACTION
+3. Setting "// NEEDS_LOGS: true" causes the physical file contents from disk, terminal execution logs, and system anomaly reports to be monitored and passed directly into your next reasoning step.
+4. Only AFTER physically reading the file and reviewing real host logs may you propose a WRITE_FILE action with the tested solution.
+`;
+  }
+
   // Strictly enforce user's configured prompt memory limit (1 to 20 prompts)
   const maxHistoryEntries = Math.max(1, Math.min(20, promptMemoryLimit)) * 2;
   const prunedMessages = sanitizedMessages.slice(-maxHistoryEntries);
@@ -911,6 +943,8 @@ Device Specs:
 - CPU: ${os.cpus()[0]?.model} (${os.cpus().length} cores)
 - RAM Total: ${(os.totalmem() / (1024 * 1024 * 1024)).toFixed(1)} GB
 - Working Root Directory: ${currentWorkingDir}
+${activeFilePath ? `- Currently Active File in Code Studio: ${activeFilePath}` : ''}
+${Array.isArray(openedFiles) && openedFiles.length > 0 ? `- Open Files in Editor: ${openedFiles.map((f: any) => f.path || f.name).join(', ')}` : ''}
 
 PLAN AHEAD FIRST:
 Always plan ahead before initiating actions. Clearly lay out your diagnosis, intended steps, and strategy in your response before proposing an action.
@@ -924,6 +958,19 @@ Whenever you decide to execute a command, read/edit/delete/download a file, crea
 // DETAILS:
 <Command, Diff, New Path, or Query>
 // END_ACTION
+
+CRITICAL RULE FOR "FIX THE ERRORS" / CODE TROUBLESHOOTING:
+Whenever the user asks to "fix the errors", debug, or resolve bugs:
+1. NEVER simulate, guess, or invent file contents in your response text.
+2. You MUST physically inspect the file by outputting a READ_FILE action first:
+// ACTION: READ_FILE
+// TARGET: <filepath>
+// REASON: Physically opening file from disk to inspect real source code and monitor logs.
+// NEEDS_LOGS: true
+// END_ACTION
+3. Always set "// NEEDS_LOGS: true" so the operator's execution output, terminal logs, and system anomalies are monitored and fed back to you.
+4. Propose WRITE_FILE modifications ONLY AFTER reviewing the physical file content and logs.
+${fixErrorsDirective}
 
 CRITICAL RULE FOR WRITING CODE TO A FILE:
 When the user asks to write, save, or generate code into a file (or when an admin write directive is provided), ALWAYS output a structured WRITE_FILE action block with target filename and complete code inside DETAILS so the operator can review and approve saving it to disk:
@@ -989,7 +1036,7 @@ Provide clean, direct, and rigorous administrative intelligence.`;
     const content = data.message?.content || '';
 
     // Extract any structured action from the Ollama model's output
-    const extractedAction = extractActionFromOllamaOutput(content);
+    const extractedAction = extractActionFromOllamaOutput(content, isFixErrorsIntent);
 
     addLog('INFO', 'ollama-chat', `Completed response from Ollama model ${model} (${prunedMessages.length} history msgs in memory)`);
 

@@ -14,6 +14,7 @@ interface ContinuationPromptBannerProps {
   stepCurrent?: number;
   stepTotal?: number;
   autoAllowPromptActive: boolean;
+  recentLogs?: Array<{ id: string; timestamp: string; level: string; source: string; message: string }>;
   onContinueAction: (promptWithLogs: string) => void;
   onCancelAutoContinue: () => void;
 }
@@ -25,9 +26,16 @@ export const ContinuationPromptBanner: React.FC<ContinuationPromptBannerProps> =
   stepCurrent = 1,
   stepTotal = 3,
   autoAllowPromptActive,
+  recentLogs,
   onContinueAction,
 }) => {
   // Construct rich feedback payload for Ollama
+  const fileContent = typeof lastAction.result?.content === 'string' ? lastAction.result.content : '';
+  const recentLogsText =
+    recentLogs && recentLogs.length > 0
+      ? recentLogs.slice(0, 4).map((l) => `[${l.level}] ${l.source}: ${l.message}`).join('\n')
+      : 'No active kernel anomaly alerts detected.';
+
   const defaultPayload = suggestedContinuation
     ? `${suggestedContinuation}\n\n[Execution Logs]:\nTarget: ${lastAction.target}\nStatus: ${lastAction.status}\nExit Code: ${
         lastAction.result?.exitCode ?? 0
@@ -36,6 +44,13 @@ export const ContinuationPromptBanner: React.FC<ContinuationPromptBannerProps> =
           ? lastAction.result.stdout.slice(0, 300)
           : lastAction.result?.stderr || 'Verified clean execution.'
       }`
+    : lastAction.type === 'READ_FILE'
+    ? `File "${lastAction.target}" has been physically opened and read from disk (${
+        lastAction.result?.size ?? fileContent.length
+      } bytes).\n\n[Physical File Content from Disk]:\n\`\`\`\n${fileContent.slice(
+        0,
+        4000
+      )}\n\`\`\`\n\n[Monitored Host System Logs]:\n${recentLogsText}\n\nNow diagnose the real code and logs above, and propose the verified fix using // ACTION: WRITE_FILE.`
     : `Continue action: Verified execution of ${lastAction.type} (${lastAction.target}). Exit code: ${
         lastAction.result?.exitCode ?? 0
       }. Proceed with next diagnostic or implementation step.`;
@@ -47,7 +62,10 @@ export const ContinuationPromptBanner: React.FC<ContinuationPromptBannerProps> =
       <div className="flex items-center justify-between gap-4 mb-2">
         <div>
           <div className="text-xs font-semibold text-white flex items-center gap-2">
-            Action Completed: <span className="font-mono text-blue-400">{lastAction.target}</span>
+            Action Completed:{' '}
+            <span className="font-mono text-blue-400">
+              {lastAction.type === 'READ_FILE' ? `Physically Opened: ${lastAction.target}` : lastAction.target}
+            </span>
             {isMultiStepPlan && (
               <span className="text-[11px] font-mono text-slate-400">
                 · Step {stepCurrent} of {stepTotal}
@@ -55,7 +73,9 @@ export const ContinuationPromptBanner: React.FC<ContinuationPromptBannerProps> =
             )}
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
-            Ollama can receive these terminal logs to continue reasoning on your prompt.
+            {lastAction.type === 'READ_FILE'
+              ? 'Physical file content read from disk into Code Studio. Monitored logs ready for Ollama.'
+              : 'Ollama can receive these terminal logs to continue reasoning on your prompt.'}
           </div>
         </div>
 
@@ -90,7 +110,9 @@ export const ContinuationPromptBanner: React.FC<ContinuationPromptBannerProps> =
           className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors flex items-center gap-1.5 shadow-md shadow-blue-950"
         >
           <Send className="w-3.5 h-3.5" />
-          Send "Continue Action" with Logs
+          {lastAction.type === 'READ_FILE'
+            ? 'Send Physical File & Monitored Logs'
+            : 'Send "Continue Action" with Logs'}
         </button>
       </div>
     </div>

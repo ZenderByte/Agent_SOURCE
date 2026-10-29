@@ -20,6 +20,7 @@ import {
   Edit3,
   FolderPlus,
   Trash2,
+  Wrench,
 } from 'lucide-react';
 import { CodeEditorFile, SystemInfo } from '../types.ts';
 import { CodeHighlight } from './CodeHighlight.tsx';
@@ -506,6 +507,20 @@ export const CodeStudio: React.FC<CodeStudioProps> = ({
               >
                 <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
                 Ask Ollama to Refactor
+              </button>
+
+              <button
+                onClick={() =>
+                  onAskAiToRefactor(
+                    activeFile.path,
+                    `Fix the errors in "${activeFile.path}" and monitor execution logs. Physically open and inspect the actual file from disk and review terminal output before proposing fixes.`
+                  )
+                }
+                className="flex items-center gap-1.5 px-3 py-1 bg-amber-950/80 hover:bg-amber-900 border border-amber-600/70 text-amber-200 rounded text-xs transition-colors"
+                title="Ask Ollama to physically inspect this file and monitor output logs to fix errors"
+              >
+                <Wrench className="w-3.5 h-3.5 text-amber-400" />
+                Fix Errors &amp; Monitor Logs
               </button>
             </div>
           </div>

@@ -355,6 +355,8 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
           promptMemoryLimit: ollamaSettings.promptMemoryLimit,
           messages: sanitizedHistory,
           systemInfo,
+          activeFilePath,
+          openedFiles: openedFiles.map((f) => ({ path: f.path, name: f.name })),
         }),
       });
 
@@ -500,19 +502,26 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
           body: JSON.stringify({ filePath: action.target }),
         });
         resultPayload = await res.json();
+        resultPayload.exitCode = res.ok ? 0 : 1;
 
         if (typeof resultPayload.content === 'string') {
           const fileName = action.target.split('/').pop() || 'file';
+          resultPayload.size = resultPayload.content.length;
           setOpenedFiles((prev) => {
             const exists = prev.find((f) => f.path === action.target);
-            if (exists) return prev;
+            if (exists) {
+              return prev.map((f) =>
+                f.path === action.target ? { ...f, content: resultPayload.content as string, isDirty: false } : f
+              );
+            }
             return [
               ...prev,
               {
                 path: action.target,
                 name: fileName,
                 content: resultPayload.content as string,
-                language: fileName.endsWith('.py') ? 'python' : 'typescript',
+                language: fileName.endsWith('.py') ? 'python' : fileName.endsWith('.js') || fileName.endsWith('.ts') ? 'typescript' : 'bash',
+                isDirty: false,
               },
             ];
           });
@@ -903,6 +912,9 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
             onUpdateRootDirectory={handleUpdateRootDirectory}
             onNavigateToSearch={() => window.open('https://zenderbyte.github.io/', '_blank')}
             onSaveCodeToFile={handleSaveCodeToFile}
+            activeFilePath={activeFilePath}
+            openedFiles={openedFiles}
+            recentLogs={logs.slice(0, 8)}
           />
         )}
 

@@ -52,6 +52,7 @@ export interface ActionResult {
   deletedPath?: string;
   renamedFrom?: string;
   renamedTo?: string;
+  size?: number;
 }
 
 export interface ActionProposal {
