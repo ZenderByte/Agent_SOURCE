@@ -774,6 +774,7 @@ function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = fals
     if (type === 'MKDIR') type = 'CREATE_FOLDER';
     if (type === 'RMDIR') type = 'DELETE_FOLDER';
     if (type === 'RENAME' || type === 'MOVE') type = 'RENAME_PATH';
+    if (type === 'STOP_DEBUG_LOOP' || type === 'STOP_LOOP') type = 'STOP_LOOP';
 
     // If operator is fixing errors and action is READ_FILE, automatically require logs/content continuation
     if (type === 'READ_FILE' && isFixErrorsIntent) {
@@ -867,6 +868,18 @@ function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = fals
       details: execMatch[3].trim(),
       risk: 'routine' as const,
       needsContinuationLogs,
+    };
+  }
+
+  const stopLoopMatch = content.match(/\/\/\s*(STOP\s*(DEBUG)?\s*LOOP|HALT\s*LOOP)/i);
+  if (stopLoopMatch) {
+    return {
+      type: 'STOP_LOOP',
+      target: 'auto-debug-loop',
+      reason: 'Terminating automated debug and monitor loop. Fix applied.',
+      details: 'All errors diagnosed and resolved.',
+      risk: 'safe' as const,
+      needsContinuationLogs: false,
     };
   }
 
@@ -981,16 +994,20 @@ When the user asks to write, save, or generate code into a file (or when an admi
 <complete source code>
 // END_ACTION
 
-CRITICAL RULE FOR CONTINUATION LOGS:
+CRITICAL RULE FOR CONTINUATION LOGS & AUTOMATED DEBUG LOOP:
 - The "sending logs and continue prompt" banner should NOT always appear!
 - Most actions are self-contained. For self-contained or final actions, DO NOT ask for logs.
 - ONLY if you know you will NOT finish in this single action and genuinely need terminal execution logs/output to decide your next debugging or configuration step, add the following line inside your action block:
 // NEEDS_LOGS: true
-If you don't need logs to proceed, omit it completely.
+- When an automated debug & monitor loop is active, every time the target app or command closes/finishes, execution logs will be sent to you automatically.
+- Analyze the output in each cycle. Repeat until you have diagnosed the root cause.
+- AS SOON AS YOU FIND THE SOLUTION, YOU MUST SEND BACK A CODE ACTION (// ACTION: WRITE_FILE) WITH THE COMPLETE FIXED CODE.
+- Sending a WRITE_FILE code action signals that the fix has been determined and automatically STOPS THE LOOP!
+- Alternatively, if the execution is already completely clean and working, you may output // ACTION: STOP_LOOP to stop the loop.
 
 ALLOWED ACTION TYPES:
 - EXEC_COMMAND: Run shell command.
-- WRITE_FILE: Create or edit file. Target is filepath, Details is file content.
+- WRITE_FILE: Create or edit file. Target is filepath, Details is file content (Code Action that stops the loop).
 - READ_FILE: Inspect file content. Target is filepath.
 - DELETE_FILE: Delete file. Target is filepath.
 - CREATE_FOLDER: Create directory recursively. Target is folder path (e.g. src/modules).
@@ -1000,6 +1017,7 @@ ALLOWED ACTION TYPES:
 - DOWNLOAD: Download asset from URL or git clone repository.
 - SEARCH: Incognito web search.
 - LAUNCH_LINK: Open link in user's browser.
+- STOP_LOOP: Explicitly stop the auto-monitoring debug loop.
 - LAUNCH_APP / KILL_PROCESS / ENV_SETUP.
 
 Provide clean, direct, and rigorous administrative intelligence.`;

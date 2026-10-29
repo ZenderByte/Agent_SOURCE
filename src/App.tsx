@@ -141,6 +141,15 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const [autoAllowPromptActive, setAutoAllowPromptActive] = useState(false);
+  const [autoDebugLoop, setAutoDebugLoop] = useState<{
+    active: boolean;
+    targetFile: string | null;
+    iteration: number;
+  }>({
+    active: false,
+    targetFile: null,
+    iteration: 0,
+  });
 
   // Sound chime helper
   const playChime = useCallback(
@@ -397,8 +406,14 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
           risk: reply.action.risk || 'safe',
           status: 'pending',
           timestamp: new Date().toISOString(),
+          needsContinuationLogs: reply.action.needsContinuationLogs,
         };
         playChime('action');
+
+        // Check if AI sent back a code action (WRITE_FILE) or STOP_LOOP to stop the automated debug loop
+        if (autoDebugLoop.active && (reply.action.type === 'WRITE_FILE' || reply.action.type === 'STOP_LOOP')) {
+          setAutoDebugLoop({ active: false, targetFile: null, iteration: 0 });
+        }
       }
 
       const assistantMsg: ChatMessage = {
@@ -664,6 +679,37 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
           return m;
         })
       );
+
+      // Automated debug & monitor loop:
+      // When the app/command gets closed or terminates, automatically send logs to Ollama again,
+      // repeating until the AI sends back a code action (WRITE_FILE) to stop the loop.
+      if (autoDebugLoop.active && action.type !== 'WRITE_FILE' && action.type !== 'STOP_LOOP') {
+        if (autoDebugLoop.iteration < 10) {
+          const exitCode = resultPayload.exitCode ?? 0;
+          const stdOut = typeof resultPayload.stdout === 'string' ? resultPayload.stdout : '';
+          const stdErr = typeof resultPayload.stderr === 'string' ? resultPayload.stderr : '';
+          const content = typeof resultPayload.content === 'string' ? resultPayload.content : '';
+
+          let logsSnippet = '';
+          if (action.type === 'READ_FILE') {
+            logsSnippet = `File "${action.target}" physically opened from disk (${content.length} bytes).\n[File Content from Disk]:\n\`\`\`\n${content.slice(0, 3500)}\n\`\`\``;
+          } else {
+            logsSnippet = `App/Command \`${action.target}\` finished and closed with Exit Code: ${exitCode}.\n[Stdout]:\n${stdOut.slice(0, 2000) || '(none)'}\n[Stderr]:\n${stdErr.slice(0, 2000) || '(none)'}`;
+          }
+
+          const currentCycle = autoDebugLoop.iteration;
+          const nextCycle = currentCycle + 1;
+          setAutoDebugLoop((prev) => ({ ...prev, iteration: nextCycle }));
+
+          setTimeout(() => {
+            handleSendMessage(
+              `[Auto-Monitoring Loop: Cycle ${currentCycle} / Target: ${autoDebugLoop.targetFile || action.target}]\nThe application or command has closed.\n\n${logsSnippet}\n\nReview the execution logs above. Propose the next diagnostic step, or if you have formulated the solution, send back a CODE ACTION (// ACTION: WRITE_FILE) with the complete corrected code to update the file and stop the loop.`
+            );
+          }, 600);
+        } else {
+          setAutoDebugLoop({ active: false, targetFile: null, iteration: 0 });
+        }
+      }
     } catch (err: unknown) {
       setMessages((prev) =>
         prev.map((m) => {
@@ -689,6 +735,7 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
   // Deny Action
   const handleDenyAction = (actionId: string) => {
     setAutoAllowPromptActive(false);
+    setAutoDebugLoop({ active: false, targetFile: null, iteration: 0 });
     setMessages((prev) =>
       prev.map((m) => {
         if (m.action && m.action.id === actionId) {
@@ -821,6 +868,35 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
     handleSendMessage(`Execute file "${filePath}" in terminal: \`${cmd}\`. Review output logs.`);
   };
 
+  const handleStartFixErrorsAndMonitor = (filePath?: string) => {
+    setCurrentTab('chat');
+    const target = filePath || activeFilePath || openedFiles[0]?.path || '/workspace/main.py';
+    setAutoDebugLoop({
+      active: true,
+      targetFile: target,
+      iteration: 1,
+    });
+    setAutoAllowPromptActive(true);
+
+    const isPy = target.endsWith('.py');
+    const cmd = isPy ? `python3 "${target}"` : `node "${target}"`;
+    handleSendMessage(
+      `Execute file "${target}" in terminal: \`${cmd}\`. Monitor execution output and fix any errors. When the app or command closes, execution logs will be automatically sent to you. Repeat until you send back a code action (// ACTION: WRITE_FILE) with the complete corrected code to update the file and stop the loop.`
+    );
+  };
+
+  const handleStopAutoLoop = () => {
+    setAutoDebugLoop({ active: false, targetFile: null, iteration: 0 });
+    setAutoAllowPromptActive(false);
+    const stopMsg: ChatMessage = {
+      id: `stop-${Date.now()}`,
+      role: 'system',
+      content: 'Automated monitoring loop stopped by operator.',
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, stopMsg]);
+  };
+
   const handleAskAiToRefactor = (filePath: string, code: string) => {
     setCurrentTab('chat');
     handleSendMessage(
@@ -915,6 +991,9 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
             activeFilePath={activeFilePath}
             openedFiles={openedFiles}
             recentLogs={logs.slice(0, 8)}
+            onStartFixErrorsAndMonitor={handleStartFixErrorsAndMonitor}
+            autoDebugLoop={autoDebugLoop}
+            onStopAutoLoop={handleStopAutoLoop}
           />
         )}
 
@@ -933,6 +1012,7 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
             onSaveFile={handleSaveFileInStudio}
             onRunFileInTerminal={handleRunFileInTerminal}
             onAskAiToRefactor={handleAskAiToRefactor}
+            onFixErrorsAndMonitorLogs={handleStartFixErrorsAndMonitor}
             onOpenFileFromDisk={handleOpenFileFromDisk}
             onUpdateRootDirectory={handleUpdateRootDirectory}
           />

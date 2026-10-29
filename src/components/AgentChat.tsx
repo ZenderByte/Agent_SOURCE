@@ -20,6 +20,7 @@ import {
   FileCode,
   AlertTriangle,
   Wrench,
+  Play,
 } from 'lucide-react';
 import { ChatMessage, OllamaSettings, SystemInfo } from '../types.ts';
 import { ActionApprovalCard } from './ActionApprovalCard.tsx';
@@ -46,6 +47,9 @@ interface AgentChatProps {
   activeFilePath?: string | null;
   openedFiles?: Array<{ path: string; name: string }>;
   recentLogs?: Array<{ id: string; timestamp: string; level: string; source: string; message: string }>;
+  onStartFixErrorsAndMonitor?: (filePath?: string) => void;
+  autoDebugLoop?: { active: boolean; targetFile: string | null; iteration: number };
+  onStopAutoLoop?: () => void;
 }
 
 export const AgentChat: React.FC<AgentChatProps> = ({
@@ -66,6 +70,9 @@ export const AgentChat: React.FC<AgentChatProps> = ({
   activeFilePath,
   openedFiles,
   recentLogs,
+  onStartFixErrorsAndMonitor,
+  autoDebugLoop,
+  onStopAutoLoop,
 }) => {
   const [input, setInput] = useState('');
   const [writeToFileMode, setWriteToFileMode] = useState(false);
@@ -180,6 +187,33 @@ export const AgentChat: React.FC<AgentChatProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Auto-Monitoring Loop Active Banner */}
+      {autoDebugLoop?.active && (
+        <div className="w-full px-6 py-2.5 bg-gradient-to-r from-blue-950/80 via-slate-900 to-[#0e111a] border-b border-blue-500/40 flex items-center justify-between gap-4 text-xs shrink-0 animate-fadeIn">
+          <div className="flex items-center gap-2.5 text-blue-200">
+            <RotateCw className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+            <span>
+              <strong className="text-white">Auto-Monitoring Loop Active (Cycle {autoDebugLoop.iteration})</strong> · Target:{' '}
+              <code className="text-blue-300 font-mono bg-blue-950/60 px-1.5 py-0.5 rounded border border-blue-800/40">
+                {autoDebugLoop.targetFile || 'Target Process'}
+              </code>
+              <span className="text-slate-400 hidden sm:inline ml-1.5">
+                Terminal logs auto-feed to Ollama when closed until a code action (<code>WRITE_FILE</code>) is received.
+              </span>
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onStopAutoLoop}
+            className="flex items-center gap-1.5 px-3 py-1 bg-rose-950/80 hover:bg-rose-900 border border-rose-700/60 text-rose-200 rounded text-xs font-semibold transition-colors shrink-0"
+            title="Terminate automated debug loop"
+          >
+            <span>Stop Loop</span>
+          </button>
+        </div>
+      )}
 
       {/* Message Stream */}
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
@@ -412,14 +446,18 @@ export const AgentChat: React.FC<AgentChatProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  const targetHint = activeFilePath ? ` in ${activeFilePath.split('/').pop()}` : '';
-                  setInput(`Fix the errors${targetHint} and monitor output logs`);
+                  if (onStartFixErrorsAndMonitor) {
+                    onStartFixErrorsAndMonitor(activeFilePath || undefined);
+                  } else {
+                    const targetHint = activeFilePath ? ` in ${activeFilePath.split('/').pop()}` : '';
+                    setInput(`Fix the errors${targetHint} and monitor output logs`);
+                  }
                 }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[#141721] hover:bg-[#1a1f2c] border border-amber-600/60 hover:border-amber-500 text-amber-300 transition-all shadow-sm"
-                title="Instruct Ollama to physically open the file from disk and monitor logs to fix errors"
+                className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs transition-colors"
+                title="Execute file in terminal, monitor output logs, and auto-loop until Ollama sends a code action fix"
               >
-                <Wrench className="w-3.5 h-3.5 text-amber-400" />
-                <span>Fix Errors (Open &amp; Monitor Logs)</span>
+                <Play className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Fix Errors &amp; Monitor Logs</span>
               </button>
 
               {writeToFileMode && (

@@ -17,7 +17,8 @@ export type ActionType =
   | 'CHANGE_ROOT_DIRECTORY'
   | 'DOWNLOAD'
   | 'LAUNCH_LINK'
-  | 'SEARCH';
+  | 'SEARCH'
+  | 'STOP_LOOP';
 
 export type ActionRisk = 'routine' | 'safe' | 'dangerous' | 'critical';
 

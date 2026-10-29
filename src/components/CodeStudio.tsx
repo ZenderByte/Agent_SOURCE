@@ -35,6 +35,7 @@ interface CodeStudioProps {
   onSaveFile: (file: CodeEditorFile) => Promise<boolean>;
   onRunFileInTerminal: (filePath: string) => void;
   onAskAiToRefactor: (filePath: string, code: string) => void;
+  onFixErrorsAndMonitorLogs: (filePath: string) => void;
   onOpenFileFromDisk: (filePath: string) => void;
   onUpdateRootDirectory: (newPath: string) => Promise<boolean>;
 }
@@ -48,6 +49,7 @@ export const CodeStudio: React.FC<CodeStudioProps> = ({
   onSaveFile,
   onRunFileInTerminal,
   onAskAiToRefactor,
+  onFixErrorsAndMonitorLogs,
   onOpenFileFromDisk,
   onUpdateRootDirectory,
 }) => {
@@ -502,25 +504,21 @@ export const CodeStudio: React.FC<CodeStudioProps> = ({
               </button>
 
               <button
-                onClick={() => onAskAiToRefactor(activeFile.path, editorContent)}
-                className="flex items-center gap-1.5 px-3 py-1 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 rounded text-xs transition-colors"
+                onClick={() => onFixErrorsAndMonitorLogs(activeFile.path)}
+                className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs transition-colors"
+                title="Execute file in terminal, monitor output logs, and auto-loop until Ollama sends a code action fix"
               >
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                Ask Ollama to Refactor
+                <Play className="w-3.5 h-3.5 text-emerald-400" />
+                Fix Errors &amp; Monitor Logs
               </button>
 
               <button
-                onClick={() =>
-                  onAskAiToRefactor(
-                    activeFile.path,
-                    `Fix the errors in "${activeFile.path}" and monitor execution logs. Physically open and inspect the actual file from disk and review terminal output before proposing fixes.`
-                  )
-                }
-                className="flex items-center gap-1.5 px-3 py-1 bg-amber-950/80 hover:bg-amber-900 border border-amber-600/70 text-amber-200 rounded text-xs transition-colors"
-                title="Ask Ollama to physically inspect this file and monitor output logs to fix errors"
+                onClick={() => onAskAiToRefactor(activeFile.path, editorContent)}
+                className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs transition-colors"
+                title="Ask Ollama to refactor and optimize this file"
               >
-                <Wrench className="w-3.5 h-3.5 text-amber-400" />
-                Fix Errors &amp; Monitor Logs
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                Ask Ollama to Refactor
               </button>
             </div>
           </div>

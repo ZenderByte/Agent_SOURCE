@@ -71,6 +71,8 @@ export const ActionApprovalCard: React.FC<ActionApprovalCardProps> = ({
         return <Search className="w-4 h-4 text-blue-400" />;
       case 'LAUNCH_LINK':
         return <ExternalLink className="w-4 h-4 text-sky-400" />;
+      case 'STOP_LOOP':
+        return <CheckCircle2 className="w-4 h-4 text-emerald-400" />;
       default:
         return <ShieldAlert className="w-4 h-4 text-amber-400" />;
     }
@@ -78,6 +80,8 @@ export const ActionApprovalCard: React.FC<ActionApprovalCardProps> = ({
 
   const getActionPrefix = (type: ActionType): string => {
     switch (type) {
+      case 'STOP_LOOP':
+        return 'STOP AUTO-DEBUG LOOP:';
       case 'READ_FILE':
         return 'OPEN FILE:';
       case 'WRITE_FILE':
