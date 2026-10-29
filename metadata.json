@@ -1,0 +1,7 @@
+{
+  "name": "SysAdmin AI - Autonomous Host Administrator & Ollama Agent",
+  "description": "Autonomous system administrator agent connected to local Ollama with full hardware discovery, terminal execution, action approval gate, real-time monitoring, and anomaly alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
