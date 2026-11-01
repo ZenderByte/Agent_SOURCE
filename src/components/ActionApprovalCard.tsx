@@ -146,6 +146,11 @@ export const ActionApprovalCard: React.FC<ActionApprovalCardProps> = ({
           {getActionIcon(action.type)}
           <span className="font-semibold text-blue-300 break-all">
             //{getActionPrefix(action.type)} {action.target}
+            {action.startLine && action.endLine && (
+              <span className="ml-2 text-amber-300 font-normal">
+                (Lines {action.startLine}–{action.endLine})
+              </span>
+            )}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -251,6 +256,20 @@ export const ActionApprovalCard: React.FC<ActionApprovalCardProps> = ({
                 language={getPayloadLanguage(action.type, action.target)}
                 showLineNumbers
               />
+            )}
+            {action.result.bytesWritten !== undefined && (
+              <div className="text-emerald-300 font-semibold">
+                {action.result.startLine && action.result.endLine ? (
+                  <>Replaced lines {action.result.startLine}–{action.result.endLine} ({action.result.bytesWritten} bytes, total {action.result.totalLines} lines)</>
+                ) : (
+                  <>Wrote {action.result.bytesWritten} bytes to disk ({action.result.totalLines || 1} lines)</>
+                )}
+              </div>
+            )}
+            {action.result.startLine && action.result.endLine && !action.result.bytesWritten && (
+              <div className="text-blue-300 font-semibold">
+                Inspected lines {action.result.startLine}–{action.result.endLine} (total {action.result.totalLines} lines in file)
+              </div>
             )}
             {action.result.newCwd && (
               <div className="text-blue-300 font-semibold">

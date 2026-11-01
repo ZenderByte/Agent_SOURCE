@@ -11,6 +11,7 @@ import { ProcessManager } from './components/ProcessManager.tsx';
 import { LogsAndAnomalies } from './components/LogsAndAnomalies.tsx';
 import { SettingsModal } from './components/SettingsModal.tsx';
 import { CodeStudio } from './components/CodeStudio.tsx';
+import { SaveFileDialog } from './components/SaveFileDialog.tsx';
 import {
   ChatMessage,
   ActionProposal,
@@ -149,6 +150,17 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
     active: false,
     targetFile: null,
     iteration: 0,
+  });
+  const [saveModal, setSaveModal] = useState<{
+    isOpen: boolean;
+    code: string;
+    language: string;
+    filename: string;
+  }>({
+    isOpen: false,
+    code: '',
+    language: '',
+    filename: '',
   });
 
   // Sound chime helper
@@ -488,24 +500,32 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
         const res = await fetch('/api/system/fs/write', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath: action.target, content: action.details }),
+          body: JSON.stringify({
+            filePath: action.target,
+            content: action.details,
+            startLine: action.startLine,
+            endLine: action.endLine,
+          }),
         });
         resultPayload = await res.json();
+        resultPayload.exitCode = res.ok ? 0 : 1;
 
-        // Also sync into Code Studio opened files
+        // Also sync into Code Studio opened files with full updated content
+        const fullContent = typeof resultPayload.fullContent === 'string' ? (resultPayload.fullContent as string) : action.details;
         const fileName = action.target.split('/').pop() || 'edited_file';
         setOpenedFiles((prev) => {
           const exists = prev.find((f) => f.path === action.target);
           if (exists) {
-            return prev.map((f) => (f.path === action.target ? { ...f, content: action.details } : f));
+            return prev.map((f) => (f.path === action.target ? { ...f, content: fullContent, isDirty: false } : f));
           }
           return [
             ...prev,
             {
               path: action.target,
               name: fileName,
-              content: action.details,
-              language: fileName.endsWith('.py') ? 'python' : 'typescript',
+              content: fullContent,
+              language: fileName.endsWith('.py') ? 'python' : fileName.endsWith('.js') || fileName.endsWith('.ts') ? 'typescript' : 'bash',
+              isDirty: false,
             },
           ];
         });
@@ -514,7 +534,11 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
         const res = await fetch('/api/system/fs/read', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath: action.target }),
+          body: JSON.stringify({
+            filePath: action.target,
+            startLine: action.startLine,
+            endLine: action.endLine,
+          }),
         });
         resultPayload = await res.json();
         resultPayload.exitCode = res.ok ? 0 : 1;
@@ -918,7 +942,7 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
     );
   };
 
-  // 1-Click Code-to-File Handler: Proposes WRITE_FILE action for operator approval
+  // 1-Click Code-to-File Handler: Triggers in-app SaveFileDialog (no window.prompt)
   const handleSaveCodeToFile = (code: string, language: string, suggestedFilename?: string) => {
     let defaultName = suggestedFilename;
     if (!defaultName) {
@@ -932,31 +956,97 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
       else defaultName = 'output.txt';
     }
 
-    const customPath = window.prompt(`Enter filename/path to save this code to:`, defaultName);
-    if (!customPath || !customPath.trim()) return;
+    setSaveModal({
+      isOpen: true,
+      code,
+      language,
+      filename: defaultName,
+    });
+  };
 
-    const targetPath = customPath.trim();
-    const actionProposal: ActionProposal = {
-      id: `action-${Date.now()}`,
-      type: 'WRITE_FILE',
-      target: targetPath,
-      reason: `Operator requested to write ${language} code block into file: ${targetPath}`,
-      details: code,
-      risk: 'safe',
-      status: 'pending',
-      timestamp: new Date().toISOString(),
-    };
+  const handleConfirmSaveModal = async (targetPath: string) => {
+    const cleanPath = targetPath.trim();
+    if (!cleanPath || !saveModal.code) return;
+    const code = saveModal.code;
+    const language = saveModal.language;
+    setSaveModal((prev) => ({ ...prev, isOpen: false }));
 
-    const newMsg: ChatMessage = {
-      id: `asst-${Date.now()}`,
-      role: 'assistant',
-      content: `I've prepared a file write proposal for \`${targetPath}\`. Review the payload and click **ALLOW** to write it to your disk and load it in Code Studio:`,
-      timestamp: new Date().toISOString(),
-      action: actionProposal,
-    };
+    try {
+      const res = await fetch('/api/system/fs/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: cleanPath, content: code }),
+      });
+      const data = await res.json();
 
-    setMessages((prev) => [...prev, newMsg]);
-    playChime('action');
+      const fileName = cleanPath.split('/').pop() || 'saved_file';
+      const fileLang = fileName.endsWith('.py')
+        ? 'python'
+        : fileName.endsWith('.ts')
+        ? 'typescript'
+        : fileName.endsWith('.json')
+        ? 'json'
+        : fileName.endsWith('.js')
+        ? 'javascript'
+        : 'bash';
+
+      setOpenedFiles((prev) => {
+        const exists = prev.find((f) => f.path === cleanPath);
+        if (exists) {
+          return prev.map((f) => (f.path === cleanPath ? { ...f, content: code, isDirty: false } : f));
+        }
+        return [
+          ...prev,
+          {
+            path: cleanPath,
+            name: fileName,
+            content: code,
+            language: fileLang,
+            isDirty: false,
+          },
+        ];
+      });
+      setActiveFilePath(cleanPath);
+
+      // Create a completed action proposal card in chat
+      const actionProposal: ActionProposal = {
+        id: `action-${Date.now()}`,
+        type: 'WRITE_FILE',
+        target: cleanPath,
+        reason: `Written ${language} source code to ${cleanPath}`,
+        details: code,
+        risk: 'safe',
+        status: 'completed',
+        timestamp: new Date().toISOString(),
+        result: {
+          bytesWritten: data.bytesWritten || code.length,
+          totalLines: code.split('\n').length,
+          exitCode: 0,
+        },
+      };
+
+      const newMsg: ChatMessage = {
+        id: `asst-${Date.now()}`,
+        role: 'assistant',
+        content: `Source code successfully saved to \`${cleanPath}\`. The file is now opened in Code Studio for editing or terminal execution:`,
+        timestamp: new Date().toISOString(),
+        action: actionProposal,
+      };
+
+      setMessages((prev) => [...prev, newMsg]);
+      playChime('action');
+      fetchLogs();
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : 'Save error';
+      const failMsg: ChatMessage = {
+        id: `asst-${Date.now()}`,
+        role: 'assistant',
+        content: `Could not save code to \`${cleanPath}\`: ${errorMsg}`,
+        timestamp: new Date().toISOString(),
+        isError: true,
+      };
+      setMessages((prev) => [...prev, failMsg]);
+    }
   };
 
   return (
@@ -1063,6 +1153,15 @@ Ensure 'ollama serve' is active on your machine. What task would you like Ollama
         onSaveNotifications={handleSaveNotifications}
         availableModels={availableModels}
         onRefreshModels={checkOllama}
+      />
+
+      <SaveFileDialog
+        isOpen={saveModal.isOpen}
+        onClose={() => setSaveModal((prev) => ({ ...prev, isOpen: false }))}
+        onConfirm={handleConfirmSaveModal}
+        defaultFilename={saveModal.filename}
+        language={saveModal.language}
+        codeSnippet={saveModal.code}
       />
     </div>
   );

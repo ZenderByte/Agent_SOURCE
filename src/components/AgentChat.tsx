@@ -52,6 +52,37 @@ interface AgentChatProps {
   onStopAutoLoop?: () => void;
 }
 
+// Utility to strip all raw action blocks and directives from chat prose
+export function stripActionBlocks(content: string): string {
+  if (!content) return '';
+
+  let cleaned = content;
+
+  // 1. Remove ``` containing // ACTION: ... // END_ACTION
+  cleaned = cleaned.replace(/```(?:bash|plain|text|json|python)?\s*\n\/\/\s*ACTION:[\s\S]*?\/\/\s*END_ACTION\s*```/gi, '');
+
+  // 2. Remove standard // ACTION: ... // END_ACTION blocks
+  cleaned = cleaned.replace(/\/\/\s*ACTION:[\s\S]*?\/\/\s*END_ACTION/gi, '');
+
+  // 3. Remove unclosed trailing // ACTION: block that goes to end of response
+  cleaned = cleaned.replace(/\/\/\s*ACTION:[A-Z_]+[\s\S]*$/i, '');
+
+  // 4. Remove shorthand single-line directives
+  cleaned = cleaned.replace(/\/\/\s*(?:OPEN\s+FILE|(?:CREATE|DELETE)\s+FOLDER|MKDIR|RMDIR|RENAME|MOVE|(?:EDIT|WRITE)\s+FILE|EXECUTE\s*(?:TERMINAL)?\s*(?:COMMAND)?|STOP\s*(?:DEBUG)?\s*LOOP):[^\n\r]*/gi, '');
+
+  // 5. Remove any orphaned action parameter fields
+  cleaned = cleaned.replace(/\/\/\s*(?:TARGET|FILE|PATH|REASON|DETAILS|CONTENT|CODE|START_LINE|END_LINE|LINES|RANGE|NEEDS_LOGS|CONTINUATION):[^\n\r]*/gi, '');
+  cleaned = cleaned.replace(/\/\/\s*END_ACTION[^\n\r]*/gi, '');
+
+  // 6. Clean up empty markdown code fences leftover
+  cleaned = cleaned.replace(/```[a-z0-9_-]*\s*\n\s*```/gi, '');
+
+  // 7. Collapse redundant linebreaks
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+  return cleaned;
+}
+
 export const AgentChat: React.FC<AgentChatProps> = ({
   messages,
   onSendMessage,
@@ -117,11 +148,18 @@ export const AgentChat: React.FC<AgentChatProps> = ({
       lastMsg.action &&
       lastMsg.action.status === 'completed' &&
       lastMsg.action.needsContinuationLogs === true
-    );
+  );
 
   // Helper to render message content with syntax-highlighted code blocks
-  const renderMessageContent = (content: string) => {
-    const parts = content.split(/(```[\s\S]*?```)/g);
+  const renderMessageContent = (content: string, isAssistant = false, hasAction = false) => {
+    let textToRender = content;
+    if (isAssistant) {
+      const stripped = stripActionBlocks(content);
+      textToRender = stripped || (hasAction ? 'Administrative action formulated for operator review:' : '');
+      if (!textToRender) return null;
+    }
+
+    const parts = textToRender.split(/(```[\s\S]*?```)/g);
     return parts.map((part, idx) => {
       if (part.startsWith('```') && part.endsWith('```')) {
         const firstLineEnd = part.indexOf('\n');
@@ -363,7 +401,9 @@ export const AgentChat: React.FC<AgentChatProps> = ({
                       </div>
                     )}
 
-                    <div className="space-y-2">{renderMessageContent(msg.content)}</div>
+                    <div className="space-y-2">
+                      {renderMessageContent(msg.content, msg.role === 'assistant', Boolean(msg.action))}
+                    </div>
 
                     {/* Embedded Action Approval Gate */}
                     {msg.action && (

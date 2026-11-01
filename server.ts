@@ -562,8 +562,21 @@ app.post('/api/system/fs/list', (req, res) => {
   }
 });
 
+// Helper to strip markdown code block wrapping if model enclosed code inside ```lang ... ```
+function cleanRawCodePayload(input: string): string {
+  if (typeof input !== 'string') return '';
+  const trimmed = input.trim();
+  if (trimmed.startsWith('```') && trimmed.endsWith('```')) {
+    const firstNewline = trimmed.indexOf('\n');
+    if (firstNewline !== -1) {
+      return trimmed.slice(firstNewline + 1, -3).trimEnd();
+    }
+  }
+  return input;
+}
+
 app.post('/api/system/fs/read', (req, res) => {
-  const { filePath } = req.body;
+  const { filePath, startLine, endLine } = req.body;
   if (!filePath) return res.status(400).json({ error: 'filePath is required' });
 
   try {
@@ -572,9 +585,33 @@ app.post('/api/system/fs/read', (req, res) => {
       return res.status(404).json({ error: `File not found: ${filePath}` });
     }
 
-    const content = fs.readFileSync(resolvedPath, 'utf-8');
-    addLog('INFO', 'fs-read', `Read file: ${resolvedPath} (${content.length} bytes)`);
-    res.json({ filePath: resolvedPath, content, size: content.length });
+    const fullContent = fs.readFileSync(resolvedPath, 'utf-8');
+    const lines = fullContent.split('\n');
+    const totalLines = lines.length;
+
+    let content = fullContent;
+    const hasStart = startLine !== undefined && startLine !== null && !isNaN(Number(startLine));
+    const hasEnd = endLine !== undefined && endLine !== null && !isNaN(Number(endLine));
+
+    let sLine = hasStart ? Math.max(1, parseInt(String(startLine), 10)) : 1;
+    let eLine = hasEnd ? Math.min(totalLines, parseInt(String(endLine), 10)) : totalLines;
+
+    if (hasStart || hasEnd) {
+      if (sLine > eLine) sLine = 1;
+      content = lines.slice(sLine - 1, eLine).join('\n');
+      addLog('INFO', 'fs-read', `Read lines ${sLine}-${eLine} of ${resolvedPath} (${content.length} bytes, total ${totalLines} lines)`);
+    } else {
+      addLog('INFO', 'fs-read', `Read full file: ${resolvedPath} (${content.length} bytes, ${totalLines} lines)`);
+    }
+
+    res.json({
+      filePath: resolvedPath,
+      content,
+      totalLines,
+      startLine: hasStart || hasEnd ? sLine : 1,
+      endLine: hasStart || hasEnd ? eLine : totalLines,
+      size: content.length,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     res.status(500).json({ error: message });
@@ -582,7 +619,7 @@ app.post('/api/system/fs/read', (req, res) => {
 });
 
 app.post('/api/system/fs/write', (req, res) => {
-  const { filePath, content } = req.body;
+  const { filePath, content, startLine, endLine } = req.body;
   if (!filePath || content === undefined) {
     return res.status(400).json({ error: 'filePath and content are required' });
   }
@@ -594,9 +631,49 @@ app.post('/api/system/fs/write', (req, res) => {
       fs.mkdirSync(parentDir, { recursive: true });
     }
 
-    fs.writeFileSync(resolvedPath, content, 'utf-8');
-    addLog('AUDIT', 'fs-write', `Wrote file: ${resolvedPath} (${content.length} bytes)`);
-    res.json({ success: true, filePath: resolvedPath, bytesWritten: content.length });
+    const cleanedContent = cleanRawCodePayload(content);
+    const hasStart = startLine !== undefined && startLine !== null && !isNaN(Number(startLine));
+    const hasEnd = endLine !== undefined && endLine !== null && !isNaN(Number(endLine));
+
+    let finalContent = cleanedContent;
+    let sLine: number | undefined;
+    let eLine: number | undefined;
+    let totalLines = 1;
+
+    // Targeted section replacement if startLine & endLine are specified and file exists
+    if ((hasStart || hasEnd) && fs.existsSync(resolvedPath)) {
+      const existingContent = fs.readFileSync(resolvedPath, 'utf-8');
+      const lines = existingContent.split('\n');
+      const fileTotalLines = lines.length;
+
+      sLine = hasStart ? Math.max(1, parseInt(String(startLine), 10)) : 1;
+      eLine = hasEnd ? Math.min(fileTotalLines, parseInt(String(endLine), 10)) : fileTotalLines;
+      if (sLine > eLine) sLine = 1;
+
+      const replacementLines = cleanedContent.split('\n');
+      // Replace target range of lines with replacementLines
+      lines.splice(sLine - 1, eLine - sLine + 1, ...replacementLines);
+      finalContent = lines.join('\n');
+      totalLines = lines.length;
+
+      fs.writeFileSync(resolvedPath, finalContent, 'utf-8');
+      addLog('AUDIT', 'fs-write', `Targeted edit on ${resolvedPath}: replaced lines ${sLine}-${eLine} (${cleanedContent.length} bytes injected)`);
+    } else {
+      // Full file write/overwrite or new file creation
+      fs.writeFileSync(resolvedPath, cleanedContent, 'utf-8');
+      totalLines = cleanedContent.split('\n').length;
+      addLog('AUDIT', 'fs-write', `Wrote file: ${resolvedPath} (${cleanedContent.length} bytes, ${totalLines} lines)`);
+    }
+
+    res.json({
+      success: true,
+      filePath: resolvedPath,
+      fullContent: finalContent,
+      bytesWritten: cleanedContent.length,
+      startLine: sLine,
+      endLine: eLine,
+      totalLines,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     res.status(500).json({ error: message });
@@ -766,6 +843,22 @@ function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = fals
   const needsLogsMatch = content.match(/\/\/\s*NEEDS_LOGS:\s*(true|yes)/i) || content.match(/\/\/\s*CONTINUATION:\s*(true|yes)/i);
   let needsContinuationLogs = Boolean(needsLogsMatch);
 
+  // Extract startLine and endLine if specified by the model
+  let startLine: number | undefined;
+  let endLine: number | undefined;
+
+  const startLineMatch = content.match(/\/\/\s*(?:START_LINE|FROM_LINE):\s*(\d+)/i);
+  if (startLineMatch) startLine = parseInt(startLineMatch[1], 10);
+
+  const endLineMatch = content.match(/\/\/\s*(?:END_LINE|TO_LINE):\s*(\d+)/i);
+  if (endLineMatch) endLine = parseInt(endLineMatch[1], 10);
+
+  const rangeMatch = content.match(/\/\/\s*(?:LINES|RANGE):\s*(\d+)\s*(?:-|to)\s*(\d+)/i);
+  if (rangeMatch) {
+    startLine = parseInt(rangeMatch[1], 10);
+    endLine = parseInt(rangeMatch[2], 10);
+  }
+
   // Pattern 1: Explicit // ACTION: block
   const actionMatch = content.match(/\/\/\s*ACTION:\s*([A-Z_]+)/i);
   if (actionMatch) {
@@ -775,23 +868,25 @@ function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = fals
     if (type === 'RMDIR') type = 'DELETE_FOLDER';
     if (type === 'RENAME' || type === 'MOVE') type = 'RENAME_PATH';
     if (type === 'STOP_DEBUG_LOOP' || type === 'STOP_LOOP') type = 'STOP_LOOP';
+    if (type === 'EDIT_FILE' || type === 'UPDATE_FILE') type = 'WRITE_FILE';
 
     // If operator is fixing errors and action is READ_FILE, automatically require logs/content continuation
     if (type === 'READ_FILE' && isFixErrorsIntent) {
       needsContinuationLogs = true;
     }
 
-    const targetMatch = content.match(/\/\/\s*TARGET:\s*([^\n\r]+)/i);
+    const targetMatch = content.match(/\/\/\s*(?:TARGET|FILE|PATH):\s*([^\n\r]+)/i);
     const reasonMatch = content.match(/\/\/\s*REASON:\s*([^\n\r]+)/i);
 
     let details = '';
-    const detailsIdx = content.indexOf('// DETAILS:');
-    if (detailsIdx !== -1) {
-      const endIdx = content.indexOf('// END_ACTION', detailsIdx);
+    const detailsKeywordMatch = content.match(/\/\/\s*(?:DETAILS|CONTENT|CODE):\s*/i);
+    if (detailsKeywordMatch && detailsKeywordMatch.index !== undefined) {
+      const detailsStart = detailsKeywordMatch.index + detailsKeywordMatch[0].length;
+      const endIdx = content.indexOf('// END_ACTION', detailsStart);
       if (endIdx !== -1) {
-        details = content.substring(detailsIdx + '// DETAILS:'.length, endIdx).trim();
+        details = content.substring(detailsStart, endIdx).trim();
       } else {
-        details = content.substring(detailsIdx + '// DETAILS:'.length).trim();
+        details = content.substring(detailsStart).trim();
       }
     }
 
@@ -806,10 +901,12 @@ function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = fals
       details: details || target,
       risk: (isDangerous ? 'dangerous' : 'safe') as 'safe' | 'dangerous',
       needsContinuationLogs,
+      startLine,
+      endLine,
     };
   }
 
-  // Shorthand Patterns for folders and renames
+  // Shorthand Patterns for folders, renames, and files
   const createFolderMatch = content.match(/\/\/\s*(CREATE\s+FOLDER|MKDIR):\s*([^\n\r]+)/i);
   if (createFolderMatch) {
     return {
@@ -846,16 +943,47 @@ function extractActionFromOllamaOutput(content: string, isFixErrorsIntent = fals
     };
   }
 
-  // Pattern 2: Explicit // OPEN FILE: <path> or // EXECUTE: <cmd>
-  const openFileMatch = content.match(/\/\/\s*OPEN\s+FILE:\s*([^\n\r]+)/i);
+  // Shorthand // OPEN FILE: <path> with optional lines (lines 10-50)
+  const openFileMatch = content.match(/\/\/\s*OPEN\s+FILE:\s*([^\n\r(]+)(?:\s*\(\s*(?:lines|range)?\s*(\d+)\s*(?:-|to)\s*(\d+)\s*\))?/i);
   if (openFileMatch) {
+    const fPath = openFileMatch[1].trim();
+    let s = startLine;
+    let e = endLine;
+    if (openFileMatch[2] && openFileMatch[3]) {
+      s = parseInt(openFileMatch[2], 10);
+      e = parseInt(openFileMatch[3], 10);
+    }
     return {
       type: 'READ_FILE',
-      target: openFileMatch[1].trim(),
-      reason: 'Reading and inspecting target file structure.',
-      details: openFileMatch[1].trim(),
+      target: fPath,
+      reason: s && e ? `Reading lines ${s}-${e} of target file.` : 'Reading and inspecting target file structure.',
+      details: fPath,
       risk: 'safe' as const,
       needsContinuationLogs,
+      startLine: s,
+      endLine: e,
+    };
+  }
+
+  // Shorthand // EDIT/WRITE FILE: <path> with optional lines
+  const writeFileMatch = content.match(/\/\/\s*(?:EDIT|WRITE)\s+FILE:\s*([^\n\r(]+)(?:\s*\(\s*(?:lines|range)?\s*(\d+)\s*(?:-|to)\s*(\d+)\s*\))?/i);
+  if (writeFileMatch) {
+    const fPath = writeFileMatch[1].trim();
+    let s = startLine;
+    let e = endLine;
+    if (writeFileMatch[2] && writeFileMatch[3]) {
+      s = parseInt(writeFileMatch[2], 10);
+      e = parseInt(writeFileMatch[3], 10);
+    }
+    return {
+      type: 'WRITE_FILE',
+      target: fPath,
+      reason: s && e ? `Targeted edit on lines ${s}-${e} of ${fPath}.` : `Writing file ${fPath}.`,
+      details: fPath,
+      risk: 'safe' as const,
+      needsContinuationLogs,
+      startLine: s,
+      endLine: e,
     };
   }
 
@@ -931,17 +1059,16 @@ app.post('/api/ollama/chat', async (req, res) => {
   if (isFixErrorsIntent) {
     const targetHint = activeFilePath || (openedFiles[0]?.path) || '';
     fixErrorsDirective = `
-CRITICAL HIGH-PRIORITY DIRECTIVE — OPERATOR DEMANDS ERROR FIXING:
-The user explicitly requested to "fix the errors" or debug/troubleshoot.
-1. DO NOT SIMULATE THE FILE. Never invent, imagine, or guess file lines or output mock code in markdown.
-2. YOU MUST PHYSICALLY OPEN AND READ THE FILE FIRST: Propose a READ_FILE action immediately:
+DEBUG DIRECTIVE — PHYSICAL INSPECTION MANDATE:
+The user requested to fix errors or debug.
+1. DO NOT SIMULATE THE FILE or guess its code.
+2. PHYSICALLY READ THE FILE FIRST via:
 // ACTION: READ_FILE
-// TARGET: ${targetHint || '<filepath_to_fix>'}
-// REASON: Physically opening file from disk to inspect real source code and monitor logs.
+// TARGET: ${targetHint || '<filepath>'}
+// REASON: Physically inspecting code from disk and monitoring logs.
 // NEEDS_LOGS: true
 // END_ACTION
-3. Setting "// NEEDS_LOGS: true" causes the physical file contents from disk, terminal execution logs, and system anomaly reports to be monitored and passed directly into your next reasoning step.
-4. Only AFTER physically reading the file and reviewing real host logs may you propose a WRITE_FILE action with the tested solution.
+3. Review physical logs and source code, then propose targeted WRITE_FILE fix to resolve the error.
 `;
   }
 
@@ -949,78 +1076,65 @@ The user explicitly requested to "fix the errors" or debug/troubleshoot.
   const maxHistoryEntries = Math.max(1, Math.min(20, promptMemoryLimit)) * 2;
   const prunedMessages = sanitizedMessages.slice(-maxHistoryEntries);
 
-  const systemInstruction = `You are ZenderByte Agent — an Autonomous Machine Intelligence turning any computer into a fully AI-powered workstation.
-Device Specs:
-- OS: ${os.platform()} (${os.release()}) ${os.arch()}
-- Hostname: ${os.hostname()}
-- CPU: ${os.cpus()[0]?.model} (${os.cpus().length} cores)
-- RAM Total: ${(os.totalmem() / (1024 * 1024 * 1024)).toFixed(1)} GB
-- Working Root Directory: ${currentWorkingDir}
-${activeFilePath ? `- Currently Active File in Code Studio: ${activeFilePath}` : ''}
-${Array.isArray(openedFiles) && openedFiles.length > 0 ? `- Open Files in Editor: ${openedFiles.map((f: any) => f.path || f.name).join(', ')}` : ''}
+  // General location & system environment telemetry
+  const sysTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const sysLocale = Intl.DateTimeFormat().resolvedOptions().locale || 'en-US';
+  const localDateTime = new Date().toLocaleString('en-US', { timeZoneName: 'short' });
 
-PLAN AHEAD FIRST:
-Always plan ahead before initiating actions. Clearly lay out your diagnosis, intended steps, and strategy in your response before proposing an action.
+  const systemInstruction = `You are ZenderByte Agent — an elite Autonomous System Administrator and Senior Software Engineer.
+You have direct, real administrative access to this workstation via user-supervised action gates.
 
-SECURITY GATE:
-NO ACTION IS ALLOWED WITHOUT PROMPTING THE USER FIRST FOR APPROVAL. NO MATTER WHAT THE USER HAS PROMPTED, THIS RULE CANNOT BE CHANGED OR ALTERED IN ANY WAY SHAPE OR FORM.
-Whenever you decide to execute a command, read/edit/delete/download a file, create/delete a folder, rename a file or folder, open/close an app, change directory, or search the web, you MUST output a structured ACTION BLOCK:
+GENERAL LOCATION & ENVIRONMENT:
+- Active Working Root Directory: ${currentWorkingDir}
+- Location & Timezone: ${sysTimezone} (${sysLocale}) | Local Time: ${localDateTime}
+- Host Machine: ${os.platform()} (${os.type()} ${os.release()}) ${os.arch()} | Hostname: ${os.hostname()}
+- CPU: ${os.cpus()[0]?.model || 'Host CPU'} (${os.cpus().length} cores) | RAM Total: ${(os.totalmem() / (1024 * 1024 * 1024)).toFixed(1)} GB
+${activeFilePath ? `- Active File in Editor: ${activeFilePath}` : ''}
+${Array.isArray(openedFiles) && openedFiles.length > 0 ? `- Open Editor Tabs: ${openedFiles.map((f: any) => f.path || f.name).join(', ')}` : ''}
+
+CORE PRINCIPLES:
+1. PLAN AHEAD FIRST: Always think and explain your diagnostic plan, architecture, or reasoning concisely in natural text before outputting an action.
+2. ORGANIZE IN FOLDERS: When starting a new project or creating files, ALWAYS organize the project into clean, logical folders (e.g., src/, components/, utils/, scripts/, tests/, config/, docs/). Never dump multiple files directly into the root folder.
+3. REAL EXECUTION OVER SIMULATION: Never simulate, invent, or hallucinate file contents or terminal results. Always use real READ_FILE and real commands.
+
+ACTION PROTOCOL (SECURITY GATED):
+NO OPERATION RUNS WITHOUT USER APPROVAL. To perform an action, append an ACTION BLOCK at the end of your response:
 // ACTION: <TYPE>
-// TARGET: <FILE/CMD/FOLDER/PROCESS/URL/QUERY>
-// REASON: <Explanation>
+// TARGET: <filepath, command, folder, or search query>
+// START_LINE: <optional start line number for targeted read or edit>
+// END_LINE: <optional end line number for targeted read or edit>
+// REASON: <concise purpose>
 // DETAILS:
-<Command, Diff, New Path, or Query>
+<raw source code, diff, command, or new path>
 // END_ACTION
 
-CRITICAL RULE FOR "FIX THE ERRORS" / CODE TROUBLESHOOTING:
-Whenever the user asks to "fix the errors", debug, or resolve bugs:
-1. NEVER simulate, guess, or invent file contents in your response text.
-2. You MUST physically inspect the file by outputting a READ_FILE action first:
-// ACTION: READ_FILE
-// TARGET: <filepath>
-// REASON: Physically opening file from disk to inspect real source code and monitor logs.
-// NEEDS_LOGS: true
-// END_ACTION
-3. Always set "// NEEDS_LOGS: true" so the operator's execution output, terminal logs, and system anomalies are monitored and fed back to you.
-4. Propose WRITE_FILE modifications ONLY AFTER reviewing the physical file content and logs.
+LINE-TARGETED READING & EDITING:
+- Sliced Reading: When inspecting large files, specify // START_LINE: <num> and // END_LINE: <num> in READ_FILE to inspect only the relevant section without overloading context.
+- Targeted Section Editing: When editing an existing file, you DO NOT need to rewrite the entire file! Specify // START_LINE: <num> and // END_LINE: <num> in WRITE_FILE, and place ONLY the replacement lines in DETAILS.
+- Whole File Writing: If creating a new file or intentionally rewriting the complete file, omit START_LINE and END_LINE, and put the full code in DETAILS.
+
+AUTOMATED DEBUGGING & MONITOR LOOP:
+- Only include "// NEEDS_LOGS: true" if you genuinely need terminal execution logs to decide your next debugging step.
+- When an auto-debug loop is active, every time the app/command closes, logs will be sent to you automatically.
+- Once you determine the fix, output // ACTION: WRITE_FILE with the fix. This automatically stops the loop.
+- If execution is already verified and clean, output // ACTION: STOP_LOOP.
 ${fixErrorsDirective}
-
-CRITICAL RULE FOR WRITING CODE TO A FILE:
-When the user asks to write, save, or generate code into a file (or when an admin write directive is provided), ALWAYS output a structured WRITE_FILE action block with target filename and complete code inside DETAILS so the operator can review and approve saving it to disk:
-// ACTION: WRITE_FILE
-// TARGET: <filename with path, e.g. hello.py or main.py>
-// REASON: <Purpose of file>
-// DETAILS:
-<complete source code>
-// END_ACTION
-
-CRITICAL RULE FOR CONTINUATION LOGS & AUTOMATED DEBUG LOOP:
-- The "sending logs and continue prompt" banner should NOT always appear!
-- Most actions are self-contained. For self-contained or final actions, DO NOT ask for logs.
-- ONLY if you know you will NOT finish in this single action and genuinely need terminal execution logs/output to decide your next debugging or configuration step, add the following line inside your action block:
-// NEEDS_LOGS: true
-- When an automated debug & monitor loop is active, every time the target app or command closes/finishes, execution logs will be sent to you automatically.
-- Analyze the output in each cycle. Repeat until you have diagnosed the root cause.
-- AS SOON AS YOU FIND THE SOLUTION, YOU MUST SEND BACK A CODE ACTION (// ACTION: WRITE_FILE) WITH THE COMPLETE FIXED CODE.
-- Sending a WRITE_FILE code action signals that the fix has been determined and automatically STOPS THE LOOP!
-- Alternatively, if the execution is already completely clean and working, you may output // ACTION: STOP_LOOP to stop the loop.
-
 ALLOWED ACTION TYPES:
+- WRITE_FILE: Create/update file (or replace line range when START_LINE & END_LINE are given).
+- READ_FILE: Read whole file or sliced range (START_LINE & END_LINE).
 - EXEC_COMMAND: Run shell command.
-- WRITE_FILE: Create or edit file. Target is filepath, Details is file content (Code Action that stops the loop).
-- READ_FILE: Inspect file content. Target is filepath.
-- DELETE_FILE: Delete file. Target is filepath.
-- CREATE_FOLDER: Create directory recursively. Target is folder path (e.g. src/modules).
-- DELETE_FOLDER: Delete folder recursively. Target is folder path.
-- RENAME_PATH: Rename file or directory. Target is current path, Details is new path.
-- CHANGE_ROOT_DIRECTORY: Update working directory root.
-- DOWNLOAD: Download asset from URL or git clone repository.
-- SEARCH: Incognito web search.
-- LAUNCH_LINK: Open link in user's browser.
-- STOP_LOOP: Explicitly stop the auto-monitoring debug loop.
-- LAUNCH_APP / KILL_PROCESS / ENV_SETUP.
+- CREATE_FOLDER: Create directory path.
+- DELETE_FOLDER: Delete folder recursively.
+- DELETE_FILE: Delete file.
+- RENAME_PATH: Rename or move file/folder (TARGET: old path, DETAILS: new path).
+- CHANGE_ROOT_DIRECTORY: Switch active root folder.
+- DOWNLOAD: Download file or git clone repository.
+- SEARCH: Incognito technical search.
+- LAUNCH_LINK: Open URL in user browser.
+- STOP_LOOP: Explicitly stop monitoring loop.
+- KILL_PROCESS / ENV_SETUP.
 
-Provide clean, direct, and rigorous administrative intelligence.`;
+Be precise, efficient, and write clean, robust code.`;
 
   const ollamaPayload = {
     model,

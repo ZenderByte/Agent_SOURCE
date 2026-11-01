@@ -54,6 +54,9 @@ export interface ActionResult {
   renamedFrom?: string;
   renamedTo?: string;
   size?: number;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number;
 }
 
 export interface ActionProposal {
@@ -67,6 +70,8 @@ export interface ActionProposal {
   result?: ActionResult;
   timestamp: string;
   needsContinuationLogs?: boolean;
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface ChatMessage {
